@@ -5,7 +5,7 @@ TARGET = vtop
 all: $(TARGET)
 
 $(TARGET): main.o
-	$(CC) $(CFLAGS) -o $(TARGET) main.o
+	$(CC) $(CFLAGS) -o $(TARGET) main.o -O3
 
 main.o: main.cpp
 	$(CC) $(CFLAGS) -c main.cpp

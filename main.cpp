@@ -26,6 +26,8 @@
 #include <sstream>
 #include <sys/syscall.h>
 #include <unordered_map>
+#include <bitset>
+
 #define PROBE_MODE	(0)
 #define DIRECT_MODE	(1)
 
@@ -41,6 +43,7 @@
 
 #define min(a,b)	(a < b ? a : b)
 #define LAST_CPU_ID	(min(nr_cpus, MAX_CPUS))
+
 
 typedef unsigned atomic_t;
 
@@ -77,7 +80,6 @@ std::vector<int> vcap_banned;
 std::vector<int> numas_to_cpu;
 std::vector<int> pairs_to_cpu;
 std::vector<int> threads_to_cpu;
-
 std::vector<std::vector<int>> top_stack;
 pthread_t worker_tasks[MAX_CPUS];
 pthread_mutex_t top_stack_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -86,22 +88,39 @@ std::vector<pid_t> stopped_processes;
 
 void giveTopologyToKernel(){
         std::string output_str = "";
+	std::vector<bool> output_bits;
+
+	int bit_index = 0;
         for(int j = 3;j<6;j++){
                 for (int i = 0; i < LAST_CPU_ID; i++) {
                         for(int p=0;p< LAST_CPU_ID;p++){
                                 if(top_stack[i][p]<j){
-                                        output_str+="1";
+					output_str+="1";
+                                        output_bits.push_back(true);
                                 }else{
                                         output_str+="0";
+					output_bits.push_back(false);
                                 }
                         }
                         output_str+=";";
                 }
                 output_str+=":";
         }
-     std::ofstream procFile("/proc/edit_topology", std::ios::out | std::ios::trunc);
+
+     std::ofstream procFile("/proc/vtopology_write", std::ios::out | std::ios::trunc);
+     // Convert bit vector to byte array
     if (procFile.is_open()) {
-        procFile << output_str;
+	        std::vector<uint8_t> byteArray((output_bits.size() + 7) / 8, 0);  // Create a byte array to hold the bits
+        
+        for (size_t i = 0; i < output_bits.size(); ++i) {
+            if (output_bits[i]) {
+                byteArray[i / 8] |= (1 << (i % 8));  // Set the bit in the appropriate byte
+            }
+        }
+        
+        procFile.write(reinterpret_cast<const char*>(byteArray.data()), byteArray.size());
+
+
         procFile.close();
     } else {
         std::cerr << "Error: Unable to open /proc/edit_topology for writing." << std::endl;
@@ -130,7 +149,6 @@ void updateVectorFromBanlist(std::string fileLocation) {
 
             try {
                 int index = std::stoi(item);
-		std::cout<<"what what is "<<index<<std::endl;
                 if (index >= 0 && index < vcap_banned.size()) {
                         vcap_banned[index] = 1;
                 }
@@ -920,11 +938,11 @@ static void parseTopology(void)
 				}
 			}
 		}
-		std::cout<<"[";
-		for(int l = 0; l<spaces-2;l++){
-			std::cout<<" ";
-		}
-		std::cout<<"]";
+	//	std::cout<<"[";
+	//	for(int l = 0; l<spaces-2;l++){
+	//		std::cout<<" ";
+	//	}
+	//	std::cout<<"]";
 	}
 	printf("\n");
 	spaces = 0;
@@ -941,11 +959,11 @@ static void parseTopology(void)
                                         spaces+=3;
                                 }
                         }
-			std::cout<<"[";
-                	for(int l = 0; l<spaces-2;l++){
-                        	std::cout<<" ";
-                	}
-                	std::cout<<"]";
+	//		std::cout<<"[";
+         //       	for(int l = 0; l<spaces-2;l++){
+           //             	std::cout<<" ";
+             //   	}
+               // 	std::cout<<"]";
 			spaces=0;
                 }
         }
@@ -957,14 +975,14 @@ static void parseTopology(void)
                         std::vector<int> threads_in_pair = bitmap_to_ord_vector(pair_to_thread_arr[pairs_in_numa[j]]); 
                         for(int z=0;z<threads_in_pair.size();z++){
                                 std::vector<int> cpus_in_thread = bitmap_to_ord_vector(thread_to_cpu_arr[threads_in_pair[z]]); 
-                                std::cout<<"[";
+                  //              std::cout<<"[";
                                 for(int y=0;y<cpus_in_thread.size();y++){
-					printf("%2d",cpus_in_thread[y]);
-					if(y!=cpus_in_thread.size()-1){
-						std::cout<<" ";
-					}
+		//			printf("%2d",cpus_in_thread[y]);
+		//			if(y!=cpus_in_thread.size()-1){
+		//				std::cout<<" ";
+		//			}
                                 }
-                                std::cout<<"]";
+                 //               std::cout<<"]";
                         }
                 }
         }
