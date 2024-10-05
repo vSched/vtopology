@@ -54,6 +54,7 @@ int nr_cpus;
 int verbose = 0;
 int NR_SAMPLES = 6;
 int SAMPLE_US = 350000;
+int act_sample = 5;
 
 int sleep_time = 4;
 bool first_measurement = false;
@@ -343,6 +344,7 @@ void setArguments(const std::vector<std::string_view>& arguments) {
     set_option_value("-s", NR_SAMPLES);
     set_option_value("-u", SAMPLE_US);
     set_option_value("-d",nr_param);
+	set_option_value("-g",act_sample);
     set_option_value("-f",sleep_time);
 }
 
@@ -427,7 +429,7 @@ static void *thread_fn(void *data)
 	int *max_loops = args->max_loops;
 	atomic_t *cache_pingpong_mutex = *(args->pingpong_mutex);
 	while (1) {
-		if(amount_of_loops++ >  *max_loops){
+		if(amount_of_loops++ >  *max_loops || (args->timestamps).size() > act_sample){
 			//if(amount_f_loops > *max_loops*2){
 			//	pthread_exit(0);
 			//}
@@ -449,7 +451,6 @@ static void *thread_fn(void *data)
 				nr = 0;
 			}
 		}
-		
 		//(args->timestamps).push_back(now_nsec());
 		//nr=0;
 
@@ -724,6 +725,7 @@ void MT_find_topology(std::vector<std::vector<int>> all_pairs_to_test){
 }
 
 void performProbing(){
+	failed_test = false;
 	updateVectorFromBanlist("/home/ubuntu/banlist/vcap_strag.txt");
 	find_numa_groups();
 	apply_optimization();
@@ -1029,6 +1031,53 @@ void resetTopologyMatrix(){
 }
 
 
+
+bool performProbingMultiple(){
+	bool inner_failed_test = 0;
+	for(int i = 0;i<3;i++){
+		performProbing();
+		if(failed_test){
+			inner_failed_test = 1;
+		}
+	}
+	return !(inner_failed_test);
+}
+
+
+void performParameterSearch(){
+	int lower_bound = 1;
+	int upper_bound = 5000;
+	while(true){
+		bool small_passed = 0;
+		bool large_passed = 0;
+		int test_point = (int)(upper_bound+lower_bound) / 2;
+		int test_point_large = (int)(test_point * 1.5);
+
+		//Perform probing on test point
+		act_sample = test_point;
+		small_passed = performProbingMultiple();
+
+		//Perform probing on larger test point
+		act_sample = test_point_large;
+		performProbing();
+		large_passed = performProbingMultiple();
+
+		//we're aiming such that larger one passes and smaller does not - if both pass, 
+		//then we must move lower - if both fail, we move higher.
+		if(large_passed && small_passed){
+			lower_bound = test_point;
+		}else if(!large_passed && !small_passed){
+			upper_bound = test_point;
+		}else if(large_passed && !small_passed){
+			printf("correct sample value found");
+			printf("Found number of samples:%d",large_passed);
+			break;
+		}else{
+			printf("Something has gone wrong in configuration - restart the program or disable this optimization");
+		}
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	
@@ -1070,7 +1119,7 @@ int main(int argc, char *argv[])
 		popul_laten_last = now_nsec();
 		if(!failed_test){
 			bool topology_passed = verify_topology();
-			failed_test = false;
+			
 			latency_valid = -1;
 			if (topology_passed){
 				popul_laten_now = now_nsec();
@@ -1095,7 +1144,7 @@ int main(int argc, char *argv[])
 				printf("REPROBING.TOOK (MILLISECONDS):%lf\n", (popul_laten_now-popul_laten_last)/(double)1000000);
 			}
 		}else{
-			failed_test = false;
+			
 			performProbing();
 			if(!failed_test){
 				giveTopologyToKernel();
