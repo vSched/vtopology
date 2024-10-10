@@ -1,6 +1,5 @@
 
 
-
 /*
  * Copyright (C) 2018-2019 VMware, Inc.
  * SPDX-License-Identifier: GPL-2.0
@@ -53,11 +52,9 @@ typedef unsigned atomic_t;
 int nr_cpus;
 //parameters
 int verbose = 0;
-int NR_SAMPLES = 13;
-int SAMPLE_US = 300000;
-int act_sample = 20;
-
-int all_samples_found = 0;
+int NR_SAMPLES = 6;
+int SAMPLE_US = 350000;
+int act_sample = 3000;
 
 int sleep_time = 4;
 bool first_measurement = false;
@@ -66,7 +63,7 @@ int nr_numa_groups = 0;
 int nr_pair_groups = 0;
 int nr_tt_groups = 0;
 int minimum_latency_4 = 0;
-double threefour_latency_class = 8500;
+double threefour_latency_class = 9000;
 int cpu_group_id[MAX_CPUS];
 int cpu_pair_id[MAX_CPUS];
 int cpu_tt_id[MAX_CPUS];
@@ -75,7 +72,7 @@ int cpu_tt_id[MAX_CPUS];
 bool failed_test = false;
 bool changed_allowance = false;
 int latency_valid = -1;
-int nr_param = 150;
+int nr_param = 50;
 
 std::vector<std::vector<int>> numa_to_pair_arr;
 std::vector<std::vector<int>> pair_to_thread_arr;
@@ -155,7 +152,6 @@ void updateVectorFromBanlist(std::string fileLocation) {
                 int index = std::stoi(item);
                 if (index >= 0 && index < vcap_banned.size()) {
                         vcap_banned[index] = 1;
-			std::cout<<"HERE:"<<index<<std::endl;
                 }
             } catch (const std::invalid_argument& e) {
                 continue;
@@ -251,7 +247,40 @@ void disableStackingCpus(){
 	} else {
     		std::cout << "Unable to open file /home/banlist.txt" << std::endl;
 	}
-    	
+	
+	std::ifstream vcapFile("/home/ubuntu/banlist/vcap_strag.txt");
+    std::string vcapContent;
+    if (vcapFile.is_open()) {
+        std::ostringstream ss;
+        ss << vcapFile.rdbuf();
+        vcapContent = ss.str();
+        vcapFile.close();
+    } else {
+        std::cout << "Unable to open file /home/ubuntu/banlist/vcap_strag.txt for reading" << std::endl;
+        return;
+    }
+
+    std::istringstream iss(vcapContent);
+    std::vector<int> vcapNumbers;
+    int num;
+    while (iss >> num) {
+        if (banset.find(num) == banset.end()) {
+            vcapNumbers.push_back(num);
+        }
+    }
+
+    std::ofstream vcapOutFile("/home/ubuntu/banlist/vcap_strag.txt");
+    if (vcapOutFile.is_open()) {
+        for (int i = 0; i < vcapNumbers.size(); ++i) {
+            vcapOutFile << vcapNumbers[i];
+            if (i < vcapNumbers.size() - 1) {
+                vcapOutFile << " ";
+            }
+        }
+        vcapOutFile.close();
+    } else {
+        std::cout << "Unable to open file /home/ubuntu/banlist/vcap_strag.txt for writing" << std::endl;
+    }
 }
 
 
@@ -443,11 +472,11 @@ int stick_this_thread_to_core(int core_id,int core_id2) {
 }
 
 int get_latency_class(int latency){
-        if(latency<0 || latency>90000){
+        if(latency<0 || latency>40000){
                 return 1;
         }
 
-        if(latency< 2000){
+        if(latency< 1000){
                 return 2;
         }
         if(latency< threefour_latency_class){
@@ -529,10 +558,7 @@ int measure_latency_pair(int i, int j)
 				return -1;
 			}
 		}
-		 if(even.timestamps.size() < (act_sample-1)){
-                                        all_samples_found = false;
-                                }
-
+		
 		for(int z=0;z<even.timestamps.size() - 1;z++){
 			double sample = (even.timestamps[z+1] - even.timestamps[z]) / (double)(nr_param*2);
 			if (sample < best_sample){
@@ -700,7 +726,6 @@ void MT_find_topology(std::vector<std::vector<int>> all_pairs_to_test){
 
 void performProbing(){
 	failed_test = false;
-	all_samples_found = true;
 	updateVectorFromBanlist("/home/ubuntu/banlist/vcap_strag.txt");
 	find_numa_groups();
 	apply_optimization();
@@ -1008,22 +1033,16 @@ void resetTopologyMatrix(){
 
 
 bool performProbingMultiple(std::vector<std::vector<int>> copy_top_stack){
-        printf("new test\n");
 	bool inner_failed_test = 0;
-	for(int i = 0;i<4;i++){
+	for(int i = 0;i<5;i++){
 		failed_test = false;
 		performProbing();
-		if(!failed_test){
-			parseTopology();
-		}else{
-	        printf("simple failure\n");
-	 	}
-		if(failed_test || (copy_top_stack != top_stack) ){
-			printf("Failed above test\n");
+		parseTopology();
+		resetTopologyMatrix();
+		if(failed_test || (copy_top_stack != top_stack)){
+			printf("How did this fail?");
 			inner_failed_test = 1;
 		}
-		resetTopologyMatrix();
-		sleep(1);
 	}
 	return !(inner_failed_test);
 }
@@ -1031,11 +1050,9 @@ bool performProbingMultiple(std::vector<std::vector<int>> copy_top_stack){
 
 void performParameterSearch(){
 	int lower_bound = 1;
-	int upper_bound = 1000;
-	act_sample = 1000;
-	SAMPLE_US = 90000;
+	int upper_bound = 5000;
 	performProbing();
-	printf("Example probing done - results\n");
+	printf("Example probing done - results");
 	parseTopology();
 	std::vector<std::vector<int>> copy_top_stack;
 
@@ -1044,8 +1061,8 @@ void performParameterSearch(){
 	std::vector<std::vector<int>> copy_thread_to_cpu_arr;
 
 	copy_numa_to_pair_arr.assign(numa_to_pair_arr.begin(),numa_to_pair_arr.end());
-	copy_pair_to_thread_arr.assign(pair_to_thread_arr.begin(),pair_to_thread_arr.end());
-	copy_thread_to_cpu_arr.assign(thread_to_cpu_arr.begin(),thread_to_cpu_arr.end());
+	copy_pair_to_thread_arr.assign(numa_to_pair_arr.begin(),numa_to_pair_arr.end());
+	copy_numa_to_pair_arr.assign(numa_to_pair_arr.begin(),numa_to_pair_arr.end());
 
 	copy_top_stack.assign(top_stack.begin(),top_stack.end());
 	while(true){
@@ -1056,57 +1073,28 @@ void performParameterSearch(){
 
 		//Perform probing on test point
 		act_sample = test_point;
-		small_passed = performProbingMultiple(copy_top_stack);
+		small_passed = performProbingMultiple(copy_top_stack, );
+
+		//Perform probing on larger test point
+		act_sample = test_point_large;
+	//	performProbing();
+		large_passed = performProbingMultiple(copy_top_stack);
 		//we're aiming such that larger one passes and smaller does not - if both pass, 
 		//then we must move lower - if both fail, we move higher.
-		if(upper_bound < lower_bound*1.3){
-			printf("correct sample value found\n");
-                        printf("Found number of samples:%d \n", upper_bound);
-                        break;
-		}
-
-		if(small_passed){
+		if(large_passed && small_passed){
 			printf("value too high %d",test_point);
 			upper_bound = test_point;
-		}else{
+		}else if(!large_passed && !small_passed){
 			printf("value too low %d",test_point);
 			lower_bound = test_point;
+		}else if(large_passed && !small_passed){
+			printf("correct sample value found");
+			printf("Found number of samples:%d",large_passed);
+			break;
+		}else{
+			printf("Something has gone wrong in configuration - restart the program or disable this optimization");
 		}
 	}
-	act_sample = (int)  (1.5 *  upper_bound);
-	printf("Set number of samples:%d \n", act_sample);
-	lower_bound = 1;
-	upper_bound = 90000;
-	while(true){
-                bool small_passed = 0;
-                int test_point = (int)(upper_bound+lower_bound) / 2;
-                int test_point_large = (int)(test_point * 1.5);
-
-                //Perform probing on test point
-                SAMPLE_US = test_point;
-                small_passed = performProbingMultiple(copy_top_stack);
-                //we're aiming such that larger one passes and smaller does not - if both pass, 
-                //then we must move lower - if both fail, we move higher.
-                if(upper_bound < lower_bound*1.3){
-                        printf("correct sample value found\n");
-                        printf("Found number of samples:%d \n", upper_bound);
-                        break;
-                }
-
-                if(small_passed){
-                        printf("value too high %d",test_point);
-                        upper_bound = test_point;
-                }else{
-                        printf("value too low %d",test_point);
-                        lower_bound = test_point;
-                }
-        }
-        SAMPLE_US = (int)(1.5 * upper_bound);
-	printf("Set number of tries:%d \n", SAMPLE_US);
-
-
-
-
 }
 
 int main(int argc, char *argv[])
