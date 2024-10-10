@@ -28,6 +28,7 @@
 #include <sys/syscall.h>
 #include <unordered_map>
 #include <bitset>
+#include <filesystem>
 
 #define PROBE_MODE	(0)
 #define DIRECT_MODE	(1)
@@ -76,7 +77,9 @@ bool failed_test = false;
 bool changed_allowance = false;
 int latency_valid = -1;
 int nr_param = 150;
-
+namespace fs = std::filesystem;
+fs::path sourcePath = fs::path(__FILE__).parent_path();
+fs::path banlistPath = sourcePath.parent_path() / "banlist";
 std::vector<std::vector<int>> numa_to_pair_arr;
 std::vector<std::vector<int>> pair_to_thread_arr;
 std::vector<std::vector<int>> thread_to_cpu_arr;
@@ -196,7 +199,7 @@ bool toggle_CPU_active(int cpuNumber, bool active) {
 void enableAllCpus(){
 	//std::string command = "sudo cset set --cpu 0- " + std::to_string(LAST_CPU_ID)+" --set=benchmark_cpuset";
 	//int result = system(command.c_str());
-	std::ofstream banlistFile("/home/ubuntu/banlist/vtop.txt");
+	std::ofstream banlistFile(banlistPath / "vtop.txt");
         if (banlistFile.is_open()) {
                 banlistFile << "";
                 banlistFile.close();
@@ -244,7 +247,7 @@ void disableStackingCpus(){
 //	if (!banlist.empty()) {
 //        	banlist.pop_back();
 //    	}
-	std::ofstream banlistFile("/home/ubuntu/banlist/vtop.txt");
+	std::ofstream banlistFile(banlistPath / "vtop.txt");
 	if (banlistFile.is_open()) {
     		banlistFile << banlist;
     		banlistFile.close();
@@ -701,7 +704,7 @@ void MT_find_topology(std::vector<std::vector<int>> all_pairs_to_test){
 void performProbing(){
 	failed_test = false;
 	all_samples_found = true;
-	updateVectorFromBanlist("/home/ubuntu/banlist/vcap_strag.txt");
+	updateVectorFromBanlist(banlistPath / "vcap_strag.txt");
 	find_numa_groups();
 	apply_optimization();
 	std::vector<std::vector<int>> all_pairs_to_test(nr_numa_groups);
