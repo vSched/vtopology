@@ -54,9 +54,9 @@ typedef unsigned atomic_t;
 int nr_cpus;
 //parameters
 int verbose = 0;
-int NR_SAMPLES = 13;
-int SAMPLE_US = 300000;
-int act_sample = 20;
+int NR_SAMPLES = 2;
+int SAMPLE_US = 200000;
+int act_sample = 10;
 
 int all_samples_found = 0;
 
@@ -78,12 +78,11 @@ bool changed_allowance = false;
 int latency_valid = -1;
 int nr_param = 150;
 namespace fs = std::filesystem;
-fs::path sourcePath = fs::path(__FILE__).parent_path();
-fs::path banlistPath = sourcePath.parent_path() / "banlist";
 std::vector<std::vector<int>> numa_to_pair_arr;
 std::vector<std::vector<int>> pair_to_thread_arr;
 std::vector<std::vector<int>> thread_to_cpu_arr;
 std::vector<int> vcap_banned;
+std::filesystem::path banlistPath = "../banlist";
 std::vector<int> numas_to_cpu;
 std::vector<int> pairs_to_cpu;
 std::vector<int> threads_to_cpu;
@@ -92,6 +91,9 @@ pthread_t worker_tasks[MAX_CPUS];
 pthread_mutex_t top_stack_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 std::vector<pid_t> stopped_processes;
+
+
+
 
 void giveTopologyToKernel(){
         std::string output_str = "";
@@ -303,6 +305,7 @@ bool has_option(
 
 void setArguments(const std::vector<std::string_view>& arguments) {
     verbose = has_option(arguments, "-v");
+   // banlistPath = getBanlistPath();
     auto set_option_value = [&](const std::string_view& option, int& target) {
         if (auto value = get_option(arguments, option); !value.empty()) {
             try {
@@ -1137,7 +1140,7 @@ int main(int argc, char *argv[])
   	setArguments(args);
 	//first time probing
 	//enableAllCpus();
-	performParameterSearch();
+	//performParameterSearch();
 	performProbing();
 	if(!failed_test){
 		giveTopologyToKernel();
