@@ -55,14 +55,14 @@ int nr_cpus;
 //parameters
 int verbose = 0;
 int NR_SAMPLES = 2;
-int SAMPLE_US = 200000;
+int BASE_SAMPLES = 10000;
+int SAMPLE_US = BASE_SAMPLES;
 int act_sample = 10;
 
 int all_samples_found = 0;
-
+int optimization_enable = 1;
 int sleep_time = 4;
 bool first_measurement = false;
-static size_t nr_relax = 1;
 int nr_numa_groups = 0;
 int nr_pair_groups = 0;
 int nr_tt_groups = 0;
@@ -95,25 +95,35 @@ std::vector<pid_t> stopped_processes;
 
 
 
+
+void setVtopStatusOn() {
+    std::ofstream outFile(banlistPath / "vtop_stat.txt", std::ios::trunc);
+    if (!outFile.is_open()) {
+        throw std::runtime_error("Unable to open banlist file for writing - check the banlist folder is in the right place " );
+    }
+    outFile << "1";
+    outFile.close();
+
+    if (outFile.fail()) {
+        throw std::runtime_error("Failed to write to the banlist file - check the banlist folder is in the right place and this is running as administrator ");
+    }
+}
+
+
 void giveTopologyToKernel(){
         std::string output_str = "";
 	std::vector<bool> output_bits;
 
-	int bit_index = 0;
         for(int j = 3;j<6;j++){
                 for (int i = 0; i < LAST_CPU_ID; i++) {
                         for(int p=0;p< LAST_CPU_ID;p++){
                                 if(top_stack[i][p]<j){
-					output_str+="1";
                                         output_bits.push_back(true);
                                 }else{
-                                        output_str+="0";
 					output_bits.push_back(false);
                                 }
                         }
-                        output_str+=";";
                 }
-                output_str+=":";
         }
 
      std::ofstream procFile("/proc/vtopology_write", std::ios::out | std::ios::trunc);
@@ -137,7 +147,6 @@ void giveTopologyToKernel(){
 }
 
 
-
 void updateVectorFromBanlist(std::string fileLocation) {
     std::ifstream file(fileLocation);
 
@@ -158,7 +167,7 @@ void updateVectorFromBanlist(std::string fileLocation) {
 
             try {
                 int index = std::stoi(item);
-                if (index >= 0 && index < vcap_banned.size()) {
+                if (index >= 0 && index <(int)vcap_banned.size()) {
                         vcap_banned[index] = 1;
 			std::cout<<"HERE:"<<index<<std::endl;
                 }
@@ -226,15 +235,13 @@ void disableStackingCpus(){
 	//return;
 	std::vector<int> has_been_disqualified(LAST_CPU_ID);
 	std::vector<int> thread_cpu_mask;
-	bool not_first;
-	bool previously =changed_allowance;
 	int total=0;
 	std::string banlist="";
 	std::set<int> banset;
-	for(int z=0;z<thread_to_cpu_arr.size();z++){
+	for(int z=0;z<(int)thread_to_cpu_arr.size();z++){
 		thread_cpu_mask = thread_to_cpu_arr[z];
 		total=0;
-		for(int x=0;x<thread_cpu_mask.size();x++){
+		for(int x=0;x<(int)thread_cpu_mask.size();x++){
 				if(total>0 && thread_cpu_mask[x]){
                                         //toggle_CPU_active(x,0);
 					changed_allowance = true;
@@ -321,8 +328,10 @@ void setArguments(const std::vector<std::string_view>& arguments) {
     set_option_value("-s", NR_SAMPLES);
     set_option_value("-u", SAMPLE_US);
     set_option_value("-d",nr_param);
-	set_option_value("-g",act_sample);
+    set_option_value("-g",act_sample);
     set_option_value("-f",sleep_time);
+    set_option_value("-v",verbose);
+    set_option_value("-o",optimization_enable);
 }
 
 
@@ -342,8 +351,8 @@ struct thread_args_t {
     pthread_mutex_t* mutex;
     pthread_cond_t* cond;
     int* flag;
-	int* max_loops;
 	bool* prepared;
+	int* max_loops;
 
     thread_args_t(int cpu_id, atomic_t me_value, atomic_t buddy_value,atomic_t** pp_mutex, big_atomic_t* nr_pp, int* stop_loops, pthread_mutex_t* mtx, pthread_cond_t* cond, int* flag,bool* prep, int* max_loops)
         : me(me_value), buddy(buddy_value), nr_pingpongs(nr_pp), pingpong_mutex(pp_mutex), stoploops(stop_loops), mutex(mtx), cond(cond), flag(flag), prepared(prep), max_loops(max_loops) {
@@ -397,33 +406,34 @@ static void *thread_fn(void *data)
 	int amount_of_loops = 0;
 	thread_args_t *args = (thread_args_t *)data;
 	common_setup(args);
-	big_atomic_t *nr_pingpongs = args->nr_pingpongs;
 	atomic_t nr = 0;
-	bool done = false;
+	atomic_t sample_size = (atomic_t)nr_param;
 	atomic_t me = args->me;
 	atomic_t buddy = args->buddy;
 	int *stop_loops = args->stoploops;
 	int *max_loops = args->max_loops;
 	atomic_t *cache_pingpong_mutex = *(args->pingpong_mutex);
 	while (1) {
-		if(amount_of_loops++ >  *max_loops || (args->timestamps).size() > act_sample){
+		if(amount_of_loops++ >  *max_loops || (int)(args->timestamps).size() > act_sample){
 			//if(amount_f_loops > *max_loops*2){
 			//	pthread_exit(0);
 			//}
 			if(*stop_loops == 1){
 				*stop_loops +=3;
+				*max_loops = amount_of_loops;
 				pthread_exit(0);
 			}else{
 			   *stop_loops += 1;
 			}
 		}
 		if (*stop_loops>2){
+			*max_loops = amount_of_loops;
 			pthread_exit(0);
 		}
 
 		if (__sync_bool_compare_and_swap(cache_pingpong_mutex, me, buddy)) {
 			++nr;
-			if ((nr>nr_param) && me == 0) {
+			if ((nr>sample_size) && me == 0) {
 				(args->timestamps).push_back(now_nsec());
 				nr = 0;
 			}
@@ -469,10 +479,9 @@ int get_latency_class(int latency){
 int measure_latency_pair(int i, int j)
 {
 
-	if(vcap_banned[i] || vcap_banned[j]){
+	if((vcap_banned[i] || vcap_banned[j]) && optimization_enable){
 		return threefour_latency_class + 30;
 	}
-	int sleeping_time = SAMPLE_US;
 	int amount_of_times=0;
 	if(latency_valid != -1 && latency_valid != 1){
                         amount_of_times = -2;
@@ -522,29 +531,39 @@ int measure_latency_pair(int i, int j)
 		}
 		munmap(pingpong_mutex,getpagesize());
 
-		if(even.timestamps.size() < 2){
+		if(even.timestamps.size() < 3){
 			if(amount_of_times<NR_SAMPLES){
 				amount_of_times++;
 				//max_loops = SAMPLE_US * 2;
 				continue;
 			}else{
-				atomic_t s = __sync_lock_test_and_set(&nr_pingpongs.x, 0);
-				if(verbose){
+				if(verbose > 1){
 					std::cout <<"Times around:"<<amount_of_times<<"I"<<i<<" J:"<<j<<" Sample passed " << -1 << " next.\n";
 				}
 				return -1;
 			}
 		}
-		 if(even.timestamps.size() < (act_sample-1)){
-                                        all_samples_found = false;
-                                }
+		if(even.timestamps.size() < (unsigned int)(act_sample-2) && even.timestamps.size()>3){
+                		if(SAMPLE_US>100000){
+					SAMPLE_US += 100000;
+				} else {
+				SAMPLE_US = (int) (SAMPLE_US * 2);
+				}
+				if(verbose){
+					std::cout<<"Samples moved up";
+				}
+                }
 
-		for(int z=0;z<even.timestamps.size() - 1;z++){
+		for(unsigned int z=0;z<even.timestamps.size() - 1;z++){
 			double sample = (even.timestamps[z+1] - even.timestamps[z]) / (double)(nr_param*2);
 			if (sample < best_sample){
 				best_sample = sample;
 			}
 		}
+
+//		if(*(even.max_loops) * 3 > SAMPLE_US ){
+//			SAMPLE_US -= 500;
+//		}
 	  //if(even.timestamps.size()<2){
 	//	return -1;
 	//}
@@ -553,7 +572,7 @@ int measure_latency_pair(int i, int j)
 //		std::cout<<"threshold adjusted"<<std::endl;
 //		threefour_latency_class = threefour_latency_class*1;
 //	}
-		if(verbose){
+		if(verbose > 1){
 		std::cout<<"Times around:"<<amount_of_times<<"I"<<i<<" J:"<<j<<" Sample passed " << (int)(best_sample*100) << " next.\n";
 		}
 		return (int)(best_sample * 100);
@@ -577,13 +596,26 @@ void apply_optimization(void){
 			sub_rel = top_stack[y][x];
 			for(int z=0;z<LAST_CPU_ID;z++){
 				if((top_stack[y][z]<sub_rel && top_stack[y][z]!=0)){
-					
-
 					if(top_stack[x][z] == 0){
 						set_latency_pair(x,z,sub_rel);
 					}else if(top_stack[x][z] != sub_rel){
 						failed_test = true;
-						return;
+						if(top_stack[y][z] == 1){
+							//Try harder if stacking is involved in failure
+							if(verbose){
+								printf("Adjusted upwards due to stacking\n");
+							}
+							if(SAMPLE_US>100000){
+                                        SAMPLE_US += 100000;
+                                } else {
+                                	SAMPLE_US = (int) (SAMPLE_US * 2);
+                                			}
+							SAMPLE_US = (int)(SAMPLE_US * 1.2);
+							return;
+						}
+						failed_test = true;
+						//check for existence of stacking cores on current chain
+					//	return;
 					}
 					
 				}
@@ -656,7 +688,7 @@ typedef struct {
 
 
 void ST_find_topology(std::vector<int> input){
-	for(int x=0;x<input.size();x++){
+	for(unsigned int x=0;x<input.size();x++){
 		int j = input[x] % LAST_CPU_ID;
 		int i = (input[x]-(input[x]%LAST_CPU_ID))/LAST_CPU_ID;
 		
@@ -695,11 +727,11 @@ void MT_find_topology(std::vector<std::vector<int>> all_pairs_to_test){
 	worker_thread_args worker_args[all_pairs_to_test.size()];
 	pthread_t worker_tasks[all_pairs_to_test.size()];
 	
-	for (int i = 0; i < all_pairs_to_test.size(); i++) {
+	for (unsigned int i = 0; i < all_pairs_to_test.size(); i++) {
 		worker_args[i].pairs_to_test = all_pairs_to_test[i];
 		pthread_create(&worker_tasks[i], NULL, thread_fn2, &worker_args[i]);
 	}
-	for (int i = 0; i < all_pairs_to_test.size(); i++) {
+	for (unsigned int i = 0; i < all_pairs_to_test.size(); i++) {
     		pthread_join(worker_tasks[i], NULL);
   	}
 }
@@ -721,19 +753,20 @@ void performProbing(){
 		}
 	}
 	MT_find_topology(all_pairs_to_test);
+	setVtopStatusOn();
 }
 
 
 
 bool verify_numa_group(std::vector<int> input){
 	std::vector<int> nums;
-	for (int i = 0; i < input.size(); ++i) {
+	for (unsigned int i = 0; i < input.size(); ++i) {
         	if (input[i] == 1) {
             		nums.push_back(i);
         	}
     	}
-	for(int i=0; i < nums.size();i++){
-		for(int j=i+1;j<nums.size();j++){
+	for(unsigned int i=0; i < nums.size();i++){
+		for(unsigned int j=i+1;j<nums.size();j++){
 			int latency = measure_latency_pair(pairs_to_cpu[nums[i]],pairs_to_cpu[nums[j]]);
 			if(get_latency_class(latency) != 3){
 				return false;
@@ -745,7 +778,7 @@ bool verify_numa_group(std::vector<int> input){
 
 std::vector<int> bitmap_to_ord_vector(std::vector<int> input){
 	std::vector<int> ord_vector;
-	for(int i=0;i<input.size();i++){
+	for(unsigned int i=0;i<input.size();i++){
                 if(input[i] == 1){
                     ord_vector.push_back(i);
                 }
@@ -758,7 +791,7 @@ std::vector<int> bitmap_to_ord_vector(std::vector<int> input){
 std::vector<int> bitmap_to_task_stack(std::vector<int> input,int type){
 	std::vector<int> stack;
 	std::vector<int> returnstack;
-	for(int i=0;i<input.size();i++){
+	for(unsigned int i=0;i<input.size();i++){
 		if(input[i] == 1){
 			if(type == NUMA_GROUP){
 				stack.push_back(pairs_to_cpu[i]);
@@ -769,8 +802,8 @@ std::vector<int> bitmap_to_task_stack(std::vector<int> input,int type){
 			}
 		}
 	}
-	for(int i=0;i<stack.size();i++){
-		for(int j=i+1;j<stack.size();j++){
+	for(unsigned int i=0;i<stack.size();i++){
+		for(unsigned int j=i+1;j<stack.size();j++){
 			returnstack.push_back(stack[i]*LAST_CPU_ID+stack[j]);
 		}
 	}
@@ -782,8 +815,8 @@ std::vector<int> bitmap_to_task_stack(std::vector<int> input,int type){
 
 
 void nullify_changes(std::vector<std::vector<int>> input){
-	for (int z = 0; z < input.size(); z++) {
-		for (int x = 0; x < input[z].size();x++) {
+	for (unsigned int z = 0; z <input.size(); z++) {
+		for (unsigned int x = 0; x <input[z].size();x++) {
 			int j = input[z][x] % LAST_CPU_ID;
 			int i = (input[z][x]-(input[z][x]%LAST_CPU_ID))/LAST_CPU_ID;
 			set_latency_pair(i,j,0);
@@ -814,7 +847,7 @@ bool verify_topology(void){
     }
 
 	std::vector<std::vector<int>> task_set_arr(numa_to_pair_arr.size());
-	for(int i=0;i<numa_to_pair_arr.size();i++){
+	for(unsigned int i=0;i<numa_to_pair_arr.size();i++){
 		task_set_arr[i] = bitmap_to_task_stack(numa_to_pair_arr[i],NUMA_GROUP);
 	}
 	latency_valid = 3;
@@ -824,7 +857,7 @@ bool verify_topology(void){
 		return false;
 	}
 	task_set_arr = std::vector<std::vector<int>>(pair_to_thread_arr.size());
-	for(int i=0;i<pair_to_thread_arr.size();i++){
+	for(unsigned int i=0;i<pair_to_thread_arr.size();i++){
 		task_set_arr[i] = bitmap_to_task_stack(pair_to_thread_arr[i],PAIR_GROUP);
 	}
 	latency_valid = 2;
@@ -835,12 +868,12 @@ bool verify_topology(void){
 		return false;
 	}
 	task_set_arr = std::vector<std::vector<int>>(pair_to_thread_arr.size()); 
-	for(int i=0;i<pair_to_thread_arr.size();i++){
+	for(unsigned int i=0;i<pair_to_thread_arr.size();i++){
 		std::vector<int> threads_in_pair = bitmap_to_ord_vector(pair_to_thread_arr[i]);
-		for(int g=0;g<threads_in_pair.size();g++){
+		for(unsigned int g=0;g<threads_in_pair.size();g++){
 			int thread = threads_in_pair[g];
 			std::vector<int> cpus_in_thread = bitmap_to_ord_vector(thread_to_cpu_arr[thread]);
-			for(int f=0;f<cpus_in_thread.size()-1;f++){
+			for(unsigned int f=0;f<cpus_in_thread.size()-1;f++){
 				int i_value =  cpus_in_thread[f];
 				int j_value = cpus_in_thread[f+1];
 				task_set_arr[i].push_back(i_value*LAST_CPU_ID+j_value);
@@ -860,7 +893,7 @@ bool verify_topology(void){
 //TODO rename, parse matrix
 static void parseTopology(void)
 {
-	int i, j, count = 0;
+	int i, j = 0;
 	nr_pair_groups = 0;
 	nr_tt_groups = 0;
 	nr_cpus = get_nprocs();
@@ -911,12 +944,12 @@ static void parseTopology(void)
 	for (int i = 0; i < nr_numa_groups; i++) {
 		spaces=0;
 		std::vector<int> pairs_in_numa =  bitmap_to_ord_vector(numa_to_pair_arr[i]);
-		for(int j = 0;j<pairs_in_numa.size();j++){
+		for(unsigned int j = 0;j<pairs_in_numa.size();j++){
 			std::vector<int> threads_in_pair = bitmap_to_ord_vector(pair_to_thread_arr[pairs_in_numa[j]]);	
-			for(int z=0;z<threads_in_pair.size();z++){
+			for(unsigned int z=0;z<threads_in_pair.size();z++){
 				std::vector<int> cpus_in_thread = bitmap_to_ord_vector(thread_to_cpu_arr[threads_in_pair[z]]); 
 				spaces+=1;
-				for(int y=0;y<cpus_in_thread.size();y++){
+				for(unsigned int y=0;y<cpus_in_thread.size();y++){
 					spaces+=3;
 				}
 			}
@@ -933,12 +966,12 @@ static void parseTopology(void)
 	for (int i = 0; i < nr_numa_groups; i++) {
                 spaces=0;
                 std::vector<int> pairs_in_numa =  bitmap_to_ord_vector(numa_to_pair_arr[i]);
-                for(int j = 0;j<pairs_in_numa.size();j++){
+                for(unsigned int j = 0;j<pairs_in_numa.size();j++){
                         std::vector<int> threads_in_pair = bitmap_to_ord_vector(pair_to_thread_arr[pairs_in_numa[j]]); 
-                        for(int z=0;z<threads_in_pair.size();z++){
+                        for(unsigned int z=0;z<threads_in_pair.size();z++){
                                 std::vector<int> cpus_in_thread = bitmap_to_ord_vector(thread_to_cpu_arr[threads_in_pair[z]]); 
                                 spaces+=1;
-                                for(int y=0;y<cpus_in_thread.size();y++){
+                                for(unsigned int y=0;y<cpus_in_thread.size();y++){
                                         spaces+=3;
                                 }
                         }
@@ -954,13 +987,17 @@ static void parseTopology(void)
 	for (int i = 0; i < nr_numa_groups; i++) {
                 spaces=0;
                 std::vector<int> pairs_in_numa =  bitmap_to_ord_vector(numa_to_pair_arr[i]);
-                for(int j = 0;j<pairs_in_numa.size();j++){
+                for(unsigned int j = 0;j<pairs_in_numa.size();j++){
                         std::vector<int> threads_in_pair = bitmap_to_ord_vector(pair_to_thread_arr[pairs_in_numa[j]]); 
-                        for(int z=0;z<threads_in_pair.size();z++){
+                        for(unsigned int z=0;z<threads_in_pair.size();z++){
                                 std::vector<int> cpus_in_thread = bitmap_to_ord_vector(thread_to_cpu_arr[threads_in_pair[z]]); 
                                 std::cout<<"[";
-                                for(int y=0;y<cpus_in_thread.size();y++){
+                                for(unsigned int y=0;y<cpus_in_thread.size();y++){
+					if(vcap_banned[cpus_in_thread[y]]){
+					printf("%1dS",cpus_in_thread[y]);
+					}else{
 					printf("%2d",cpus_in_thread[y]);
+					}
 					if(y!=cpus_in_thread.size()-1){
 						std::cout<<" ";
 					}
@@ -981,26 +1018,6 @@ static void parseTopology(void)
 /*
  * %4 is specific to our platform.
  */
-#define CPU_NUMA_GROUP(mode, i)	(mode == PROBE_MODE ? cpu_group_id[i] : i % 4)
-static void configure_os_numa_groups(int mode)
-{
-	int i;
-	unsigned long val;
-
-	/*
-	 * pass vcpu & numa group id in a single word using a simple encoding:
-	 * first 16 bits store the cpu identifier
-	 * next 16 bits store the numa group identifier
-	 * */
-	for(i = 0; i < LAST_CPU_ID; i++) {
-		/* store cpu identifier and left shift */
-		val = i;
-		val = val << CPU_ID_SHIFT;
-		/* store the numa group identifier*/
-		val |= CPU_NUMA_GROUP(mode, i);
-	}
-}
-
 void resetTopologyMatrix(){
 	for (int i = 0; i < LAST_CPU_ID; i++) {
 		for(int p=0;p< LAST_CPU_ID;p++){
@@ -1035,85 +1052,6 @@ bool performProbingMultiple(std::vector<std::vector<int>> copy_top_stack){
 }
 
 
-void performParameterSearch(){
-	int lower_bound = 1;
-	int upper_bound = 1000;
-	act_sample = 1000;
-	SAMPLE_US = 90000;
-	performProbing();
-	printf("Example probing done - results\n");
-	parseTopology();
-	std::vector<std::vector<int>> copy_top_stack;
-
-	std::vector<std::vector<int>> copy_numa_to_pair_arr;
-	std::vector<std::vector<int>> copy_pair_to_thread_arr;
-	std::vector<std::vector<int>> copy_thread_to_cpu_arr;
-
-	copy_numa_to_pair_arr.assign(numa_to_pair_arr.begin(),numa_to_pair_arr.end());
-	copy_pair_to_thread_arr.assign(pair_to_thread_arr.begin(),pair_to_thread_arr.end());
-	copy_thread_to_cpu_arr.assign(thread_to_cpu_arr.begin(),thread_to_cpu_arr.end());
-
-	copy_top_stack.assign(top_stack.begin(),top_stack.end());
-	while(true){
-		bool small_passed = 0;
-		bool large_passed = 0;
-		int test_point = (int)(upper_bound+lower_bound) / 2;
-		int test_point_large = (int)(test_point * 1.5);
-
-		//Perform probing on test point
-		act_sample = test_point;
-		small_passed = performProbingMultiple(copy_top_stack);
-		//we're aiming such that larger one passes and smaller does not - if both pass, 
-		//then we must move lower - if both fail, we move higher.
-		if(upper_bound < lower_bound*1.3){
-			printf("correct sample value found\n");
-                        printf("Found number of samples:%d \n", upper_bound);
-                        break;
-		}
-
-		if(small_passed){
-			printf("value too high %d",test_point);
-			upper_bound = test_point;
-		}else{
-			printf("value too low %d",test_point);
-			lower_bound = test_point;
-		}
-	}
-	act_sample = (int)  (1.5 *  upper_bound);
-	printf("Set number of samples:%d \n", act_sample);
-	lower_bound = 1;
-	upper_bound = 90000;
-	while(true){
-                bool small_passed = 0;
-                int test_point = (int)(upper_bound+lower_bound) / 2;
-                int test_point_large = (int)(test_point * 1.5);
-
-                //Perform probing on test point
-                SAMPLE_US = test_point;
-                small_passed = performProbingMultiple(copy_top_stack);
-                //we're aiming such that larger one passes and smaller does not - if both pass, 
-                //then we must move lower - if both fail, we move higher.
-                if(upper_bound < lower_bound*1.3){
-                        printf("correct sample value found\n");
-                        printf("Found number of samples:%d \n", upper_bound);
-                        break;
-                }
-
-                if(small_passed){
-                        printf("value too high %d",test_point);
-                        upper_bound = test_point;
-                }else{
-                        printf("value too low %d",test_point);
-                        lower_bound = test_point;
-                }
-        }
-        SAMPLE_US = (int)(1.5 * upper_bound);
-	printf("Set number of tries:%d \n", SAMPLE_US);
-
-
-
-
-}
 
 int main(int argc, char *argv[])
 {
@@ -1123,7 +1061,7 @@ int main(int argc, char *argv[])
 	//set program to high priority
 	moveCurrentThread();
 	nr_cpus = get_nprocs();
-
+	int iter = 0;
 	//initialize the topology matrix
 	for (int i = 0; i < LAST_CPU_ID; i++) {
 		std::vector<int> cpumap(LAST_CPU_ID);
@@ -1142,30 +1080,39 @@ int main(int argc, char *argv[])
 	//enableAllCpus();
 	//performParameterSearch();
 	performProbing();
+	iter++;
 	if(!failed_test){
 		giveTopologyToKernel();
 		parseTopology();
 		disableStackingCpus();
 	}else{
 		//std::fill(vcap_banned.begin(), vcap_banned.end(), 0);
-		printf("Probing failed, waiting until next session\n");
+		if(verbose)
+			printf("Probing failed, waiting until next session\n");
 	}
 	while(1){
-		if(verbose){
-			//print_population_matrix();
+		if(verbose > 1){
+			print_population_matrix();
 		}
 		popul_laten_last = now_nsec();
+		iter++;
+		if(iter % 100 == 0){
+			SAMPLE_US = BASE_SAMPLES;
+			if(verbose)
+				printf("samples adjusted downwards");
+		}
 		if(!failed_test){
 			bool topology_passed = verify_topology();
-			
 			latency_valid = -1;
 			if (topology_passed){
 				popul_laten_now = now_nsec();
-				printf("TOPOLOGY VERIFIED.TOOK (MILLISECONDS):%lf\n", (popul_laten_now-popul_laten_last)/(double)1000000);
+				if(verbose)
+					printf("TOPOLOGY VERIFIED.TOOK (MILLISECONDS):%lf\n", (popul_laten_now-popul_laten_last)/(double)1000000);
 				disableStackingCpus();
 			}else{
 				popul_laten_now = now_nsec();
-				printf("TOPOLOGY FAILED.TOOK (MILLISECONDS):%lf\n", (popul_laten_now-popul_laten_last)/(double)1000000);
+				if(verbose)
+					printf("TOPOLOGY FAILED.TOOK (MILLISECONDS):%lf\n", (popul_laten_now-popul_laten_last)/(double)1000000);
 				popul_laten_last = now_nsec();
 				performProbing();
 				if(!failed_test){
@@ -1174,12 +1121,14 @@ int main(int argc, char *argv[])
 					disableStackingCpus();
 				}else{
 					//enableAllCpus();
-					printf("Probing failed, waiting until next session\n");
+					if(verbose)
+						printf("Probing failed, waiting until next session\n");
 					resetTopologyMatrix();
 				//	std::fill(vcap_banned.begin(), vcap_banned.end(), 0);
 				}
 				popul_laten_now = now_nsec();
-				printf("REPROBING.TOOK (MILLISECONDS):%lf\n", (popul_laten_now-popul_laten_last)/(double)1000000);
+				if(verbose)
+					printf("REPROBING.TOOK (MILLISECONDS):%lf\n", (popul_laten_now-popul_laten_last)/(double)1000000);
 			}
 		}else{
 			
@@ -1191,12 +1140,14 @@ int main(int argc, char *argv[])
 
 			}else{
 				//enableAllCpus();
-				printf("Probing failed, waiting until next session\n");
+				if(verbose)
+					printf("Probing failed, waiting until next session\n");
 				//std::fill(vcap_banned.begin(), vcap_banned.end(), 0);
 				resetTopologyMatrix();
 			}
 		}
-		printf("Done...\n");
+		if(verbose)
+			printf("Done...\n");
 		sleep(sleep_time);
 	}
 }
