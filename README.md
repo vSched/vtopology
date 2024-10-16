@@ -12,3 +12,25 @@
 
 vTopology is a program used to determine the topology of vCPUs in a virtual machine. It measures cache line transfer latencies between vCPU pairs to infer their relationships, including SMT siblings, vCPUs on the same socket, and stacked vCPUs. 
 
+## Parameters and Configuration
+
+It is reccomended that you use vTop's default options.
+
+### Auto-Configuration
+
+vTopology will automatically scale it's cache-transfer attempts up and down based on it's successes
+and failures - more failures will encourage it to try harder, at the cost of performance, and less failures will scale the amount of effort down.
+
+This can be disabled and reenabled with the -o flag
+
+
+#### Details
+
+| Flag  | Description | Default Value
+| ------------- | ------------- | ------------- |
+| -v  | Verbosity - Can be a  value between 0-2, inclusive  | 0  |
+| -u  | Cache Transfer Attempts  | 10000  |
+| -d  | Sample Size  | 150  |
+| -g  | Sample Count  | 10  
+| -o  |  Enable Optimizations | True |
+
