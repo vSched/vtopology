@@ -31,6 +31,7 @@ This can be disabled and reenabled with the -o flag
 | -v  | Verbosity - Can be a  value between 0-2, inclusive  | 0  |
 | -u  | Cache Transfer Attempts  | 10000  |
 | -d  | Sample Size  | 150  |
-| -g  | Sample Count  | 10  
+| -g  | Sample Count  | 10 | 
+| -f  | Sleep time before probing (seconds)  | 2 | 
 | -o  |  Enable Optimizations | True |
 
